@@ -4,9 +4,32 @@
 
 set -e
 
+# Support remote execution via SSH if a hostname is provided
+if [ -n "$1" ]; then
+    echo "🚀 Connecting to $1 and applying the Antigravity patch remotely..."
+    ssh "$1" 'PATH=$PATH:~/.local/bin bash -s' < "$0"
+    if [ $? -eq 0 ]; then
+        echo "✅ Patch successfully applied on $1!"
+    else
+        echo "❌ Failed to apply patch on $1."
+    fi
+    exit $?
+fi
 # Configuration
 SERVER_DIR="$HOME/.antigravity-server/bin"
-VERSION="1.108.2" 
+
+# Fetch latest release version from MikeWang000000/vscode-server-centos7 dynamically
+LATEST_VERSION=$(curl -s https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+
+if [ -z "$LATEST_VERSION" ]; then
+    echo "⚠️  Could not fetch latest release version from GitHub API. Falling back to hardcoded version 1.108.2"
+    VERSION="1.108.2"
+else
+    # Strip any potential 'v' prefix if it exists in the tag name
+    VERSION="${LATEST_VERSION#v}"
+    echo "ℹ️  Found latest library release: $VERSION"
+fi
+
 RELEASE_URL="https://github.com/MikeWang000000/vscode-server-centos7/releases/download/${VERSION}/vscode-server_${VERSION}_x64.tar.gz"
 LIB_STORE="$HOME/.antigravity-server/lib-glibc-2.28"
 
@@ -26,11 +49,12 @@ $MAMBA_CMD install -n antigravity-node -c conda-forge patchelf -y 2>/dev/null ||
 # 2. Download and Extract Libraries (GLIBC 2.28)
 VALID_LIB=0
 if [ -d "$LIB_STORE" ]; then
-    if find "$LIB_STORE" -name "ld-linux-x86-64.so.2" | grep -q .; then
+    # Look for either the extracted tarball path or the source-compiled installation path
+    if find "$LIB_STORE" -name "ld-linux-x86-64.so.2" -o -name "ld-2.28.so" | grep -q .; then
         VALID_LIB=1
         echo "✅ Libraries confirmed present in $LIB_STORE"
     else
-        echo "⚠️  Library folder corrupt. Cleaning up..."
+        echo "⚠️  Library folder corrupt or empty. Cleaning up..."
         rm -rf "$LIB_STORE"
     fi
 fi

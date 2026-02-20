@@ -4,6 +4,17 @@
 
 set -e
 
+# Support remote execution via SSH if a hostname is provided
+if [ -n "$1" ]; then
+    echo "🚀 Connecting to $1 and resetting the Antigravity server remotely..."
+    ssh "$1" 'PATH=$PATH:~/.local/bin bash -s' < "$0"
+    if [ $? -eq 0 ]; then
+        echo "✅ Reset successfully completed on $1!"
+    else
+        echo "❌ Failed to reset on $1."
+    fi
+    exit $?
+fi
 echo "🛑 Stopping any running Antigravity server processes..."
 pkill -f antigravity-server || true
 
