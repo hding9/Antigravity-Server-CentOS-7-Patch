@@ -4,26 +4,73 @@
 
 set -e
 
-# Support remote execution via SSH if a hostname is provided
-if [ -n "$1" ]; then
-    echo "🚀 Connecting to $1 and applying the Antigravity patch remotely..."
-    ssh "$1" 'PATH=$PATH:~/.local/bin bash -s' < "$0"
-    if [ $? -eq 0 ]; then
-        echo "✅ Patch successfully applied on $1!"
-    else
-        echo "❌ Failed to apply patch on $1."
-    fi
-    exit $?
+# Support remote execution via SSH or explicit local execution
+if [ -z "$1" ]; then
+    echo "❌ Error: Missing execution target."
+    echo "Usage: bash $0 <target>"
+    echo ""
+    echo "Examples:"
+    echo "  bash $0 local          # Run on the current machine"
+    echo "  bash $0 user@hostname  # Run on a remote server via SSH"
+    exit 1
 fi
+
+TARGET="$1"
+
+if [ "$TARGET" != "local" ]; then
+    echo "🚀 Connecting to $TARGET and applying the Antigravity patch remotely..."
+    ssh "$TARGET" 'PATH=$PATH:~/.local/bin bash -s local' < "$0" || SSH_EXIT=$?
+    SSH_EXIT=${SSH_EXIT:-0}
+    if [ "$SSH_EXIT" -eq 0 ]; then
+        echo "✅ Patch successfully applied on $TARGET!"
+    else
+        echo "❌ Failed to apply patch on $TARGET. (exit code: $SSH_EXIT)"
+    fi
+    exit "$SSH_EXIT"
+fi
+
+echo "🚀 Applying the Antigravity patch locally..."
 # Configuration
 SERVER_DIR="$HOME/.antigravity-server/bin"
 
 # Fetch latest release version from MikeWang000000/vscode-server-centos7 dynamically
-LATEST_VERSION=$(curl -s https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+LATEST_VERSION=""
+
+# Method 1: Try HTTP redirect parsing to bypass GitHub API rate limits
+if command -v curl &> /dev/null; then
+    LATEST_VERSION=$(curl -s -I https://github.com/MikeWang000000/vscode-server-centos7/releases/latest | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r') || true
+elif command -v wget &> /dev/null; then
+    LATEST_VERSION=$(wget --max-redirect=0 https://github.com/MikeWang000000/vscode-server-centos7/releases/latest 2>&1 | grep -i 'Location:' | sed 's/.*tag\///' | tr -d '\r') || true
+fi
+
+# Method 2: Fallback to git ls-remote if available
+if [ -z "$LATEST_VERSION" ] && command -v git &> /dev/null; then
+    LATEST_VERSION=$(git ls-remote --tags --refs https://github.com/MikeWang000000/vscode-server-centos7.git 2>/dev/null | grep -v '\^{}' | sed -E 's/.*refs\/tags\///' | sort -V | tail -n 1) || true
+fi
+
+# Method 3: Fallback to GitHub API (may hit rate limits)
+if [ -z "$LATEST_VERSION" ]; then
+    API_RESPONSE=""
+    if command -v curl &> /dev/null; then
+        API_RESPONSE=$(curl -s https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest 2>/dev/null) || true
+    elif command -v wget &> /dev/null; then
+        API_RESPONSE=$(wget -qO- https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest 2>/dev/null) || true
+    fi
+    
+    if [ -n "$API_RESPONSE" ]; then
+        if command -v python3 &> /dev/null; then
+            LATEST_VERSION=$(echo "$API_RESPONSE" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get('tag_name',''))" 2>/dev/null) || true
+        elif command -v jq &> /dev/null; then
+            LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name // empty' 2>/dev/null) || true
+        else
+            LATEST_VERSION=$(echo "$API_RESPONSE" | grep '"tag_name":' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/') || true
+        fi
+    fi
+fi
 
 if [ -z "$LATEST_VERSION" ]; then
-    echo "⚠️  Could not fetch latest release version from GitHub API. Falling back to hardcoded version 1.108.2"
-    VERSION="1.108.2"
+    echo "⚠️  Could not fetch latest release version from GitHub API. Falling back to hardcoded version 1.109.5"
+    VERSION="1.109.5"
 else
     # Strip any potential 'v' prefix if it exists in the tag name
     VERSION="${LATEST_VERSION#v}"
