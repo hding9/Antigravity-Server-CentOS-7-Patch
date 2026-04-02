@@ -1,54 +1,56 @@
-# Antigravity Server CentOS 7 Patch
+# CentOS 7 Server Patch
 
 ## Overview
-A collection of scripts that patch **Antigravity** (VS Code Server fork) and **VS Code Remote SSH** server binaries to run on legacy Linux systems like **CentOS 7**, which lack the required `glibc >= 2.28`.
+A collection of scripts that patch **Antigravity Server** and **VS Code Server** binaries to run on legacy Linux systems like **CentOS 7**, which ship with `glibc 2.17` — too old for the `glibc >= 2.28` required by modern server binaries.
 
-Two separate patching strategies are provided because of CentOS 7's constraints:
+Both servers fail for the same reason: their bundled `node` and native modules are linked against `glibc 2.28+`, which CentOS 7 does not have.
+
+## Why Two Different Strategies?
+
+The simpler approach is to replace the bundled `node` with a compatible build from conda — this is what `fix_vscode_server.sh` does. However, this **does not work for Antigravity Server**. The node wrapper alone is not enough; Antigravity's native modules (`.node` files) also require glibc 2.28+ and crash at runtime.
+
+The patchelf approach used by `fix_antigravity_server.sh` solves this by side-loading glibc 2.28 libraries and rewriting the ELF headers of **every** binary and native module, so they all use the modern libraries instead of the system ones.
 
 | Script | Target | Strategy | Why |
 |---|---|---|---|
-| `fix_antigravity_server.sh` | Antigravity Server | Side-load glibc 2.28 via `patchelf` | Antigravity ships its own node; patching ELF headers is sufficient |
-| `fix_vscode_server.sh` | VS Code Remote SSH | Replace node with conda-installed wrapper | CentOS 7 kernel (3.10) is too old for modern glibc, so a compatible node must be used instead |
+| `fix_antigravity_server.sh` | Antigravity Server | Side-load glibc 2.28 + patchelf all binaries | Node wrapper alone causes crashes — native modules also need glibc 2.28+ |
+| `fix_vscode_server.sh` | VS Code Server | Replace bundled node with conda-installed build | Simpler; sufficient for VS Code Server |
 
 ## Acknowledgements & Credits
 **Huge thanks to [MikeWang000000/vscode-server-centos7](https://github.com/MikeWang000000/vscode-server-centos7).**
 
-The Antigravity fix uses the pre-compiled `glibc` and `gcc` runtime libraries provided by the releases in that repository. Alternatively, you can build them from source using the provided `build_glibc_source.sh` script.
+The Antigravity fix uses the pre-compiled `glibc` and `gcc` runtime libraries provided by the releases in that repository.
 
 ## How It Works
 
 ### Antigravity Server (`fix_antigravity_server.sh`)
-Uses a **"Side-Loading & Pure Patching"** strategy:
+Uses a **"Side-Loading & Patching"** strategy:
 
-1.  **Fetch Latest Version**: Dynamically detects the latest library release from `MikeWang000000/vscode-server-centos7` using multiple fallback methods (curl redirects, wget, git ls-remote, GitHub API, HTML scraping).
+1.  **Fetch Latest Version**: Detects the latest library release from `MikeWang000000/vscode-server-centos7` via curl/wget redirect following.
 2.  **Download & Extract**: `glibc 2.28` runtime libraries are saved to `~/.antigravity-server/lib-glibc-2.28`.
 3.  **Patch**: Uses `patchelf` to modify ELF headers of all server binaries and native `.node` modules:
     *   **Interpreter**: Changed to the side-loaded `ld-linux-x86-64.so.2`.
     *   **RPATH**: Changed to point to the side-loaded library directory.
-4.  **Cleanup**: Removes any leftover wrapper scripts from previous patching strategies.
 
-This approach ensures the server uses the modern libraries **without** altering the global system environment or using wrapper scripts (which can cause terminal crashes).
-
-### VS Code Remote SSH (`fix_vscode_server.sh`)
+### VS Code Server (`fix_vscode_server.sh`)
 Uses a **"Node Replacement"** strategy:
 
-The `patchelf` approach does not work for VS Code Remote SSH because CentOS 7's kernel (3.10) is too old for modern glibc (which requires kernel 3.17+). Instead, this script:
-
-1.  **Install Compatible Node**: Creates a conda environment (`vscode-node`) with a Node.js build that works on CentOS 7's kernel.
-2.  **Install Build Tools**: Installs `gxx_linux-64` from conda-forge for rebuilding native modules (CentOS 7's GCC 4.8.5 lacks C++17 support).
-3.  **Install Modern wget**: CentOS 7's system wget is too old for VS Code's download scripts; a conda-provided wget wrapper is installed to `~/.local/bin/`.
-4.  **Patch Server Installations**: For each VS Code Server commit directory in `~/.vscode-server/bin/`, backs up the original `node` binary and replaces it with a wrapper script pointing to the conda node.
-5.  **Rebuild node-pty**: If the bundled `pty.node` native module has glibc dependency issues, it is rebuilt from source using the conda toolchain.
-6.  **Configure Codex**: Sets `sandbox_mode = "danger-full-access"` in `~/.codex/config.toml` to bypass `bwrap`, which fails on CentOS 7's kernel without unprivileged user namespace support.
+1.  **Install Compatible Node**: Creates a conda environment (`vscode-node`) with a Node.js build compatible with CentOS 7.
+2.  **Install Build Tools**: Installs `gxx_linux-64` from conda-forge for rebuilding native modules.
+3.  **Install Modern wget**: A conda-provided wget wrapper is installed to `~/.local/bin/` (CentOS 7's system wget is too old for VS Code's download scripts).
+4.  **Patch Server Installations**: Backs up the original `node` binary and replaces it with a wrapper pointing to the conda node.
+5.  **Rebuild node-pty**: If the bundled `pty.node` has missing glibc symbols, it is rebuilt from source.
+6.  **Configure Codex**: Sets `sandbox_mode = "danger-full-access"` in `~/.codex/config.toml` to bypass `bwrap` (requires unprivileged user namespaces, unavailable on CentOS 7's kernel 3.10).
 
 ## Prerequisites
 *   **Micromamba** or **Conda** (used to install `patchelf`, Node.js, and build tools).
+*   **curl** or **wget** (for downloading libraries).
 *   Internet access.
 
-## Scripts
+## Usage
 
 ### `fix_antigravity_server.sh`
-Patches Antigravity server binaries. Requires an explicit execution target.
+Patches Antigravity Server binaries. Requires an explicit execution target.
 ```bash
 # Patch remotely (recommended)
 bash fix_antigravity_server.sh <your_ssh_host>
@@ -58,7 +60,7 @@ bash fix_antigravity_server.sh local
 ```
 
 ### `fix_vscode_server.sh`
-Patches VS Code Remote SSH server. Requires an explicit execution target.
+Patches VS Code Server binaries. Requires an explicit execution target.
 ```bash
 # Patch remotely (recommended)
 bash fix_vscode_server.sh <your_ssh_host>
@@ -68,7 +70,7 @@ bash fix_vscode_server.sh local
 ```
 
 ### `reset_server.sh`
-Resets the Antigravity server installation (kills processes, removes `~/.antigravity-server`, removes the `antigravity-node` conda environment).
+Resets both Antigravity Server and VS Code Server installations (kills processes, removes server directories, removes conda environments).
 ```bash
 # Reset remotely
 bash reset_server.sh <your_ssh_host>
@@ -76,17 +78,6 @@ bash reset_server.sh <your_ssh_host>
 # Reset locally on the server
 bash reset_server.sh
 ```
-
-### `build_glibc_source.sh`
-Builds glibc 2.28 and libstdc++ (GCC 8.3.0) from GNU source code as an alternative to downloading pre-compiled binaries. **This takes a significant amount of time.**
-```bash
-# Build remotely
-bash build_glibc_source.sh <your_ssh_host>
-
-# Build locally on the server
-bash build_glibc_source.sh
-```
-Once complete, `fix_antigravity_server.sh` will detect the libraries and skip the download step.
 
 ## Typical Workflow
 
@@ -96,7 +87,7 @@ Once complete, `fix_antigravity_server.sh` will detect the libraries and skip th
 3. **Patch**: `bash fix_antigravity_server.sh <your_ssh_host>`
 4. **Connect**: Connect via Antigravity again.
 
-### VS Code Remote SSH
+### VS Code Server
 1. **Download**: Attempt to connect via VS Code Remote SSH. It will fail, but this downloads the server files.
 2. **Patch**: `bash fix_vscode_server.sh <your_ssh_host>`
 3. **Connect**: Connect via VS Code Remote SSH again.

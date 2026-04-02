@@ -37,7 +37,6 @@ SERVER_DIR="$HOME/.antigravity-server/bin"
 REPO_URL="https://github.com/MikeWang000000/vscode-server-centos7"
 LATEST_VERSION=""
 
-
 # Method 1a: curl -w redirect_url (most reliable, works on old curl)
 if [ -z "$LATEST_VERSION" ] && command -v curl &> /dev/null; then
     LATEST_VERSION=$(curl -s -o /dev/null -w "%{redirect_url}" "$REPO_URL/releases/latest" 2>/dev/null | sed 's/.*tag\///' | tr -d '\r\n') || true
@@ -53,49 +52,6 @@ if [ -z "$LATEST_VERSION" ] && command -v wget &> /dev/null; then
     LATEST_VERSION=$(wget --max-redirect=0 "$REPO_URL/releases/latest" 2>&1 | grep -i 'Location:' | sed 's/.*tag\///' | sed 's/ \[following\]//' | tr -d '\r\n') || true
 fi
 
-# Method 2: git ls-remote tags
-if [ -z "$LATEST_VERSION" ] && command -v git &> /dev/null; then
-    LATEST_VERSION=$(git ls-remote --tags --refs "$REPO_URL.git" 2>/dev/null | grep -v '\^{}' | sed -E 's/.*refs\/tags\///' | sort -V | tail -n 1) || true
-fi
-
-# Method 3: GitHub API (may hit rate limits) — try wget first, curl as fallback
-if [ -z "$LATEST_VERSION" ]; then
-    API_RESPONSE=""
-    if command -v wget &> /dev/null; then
-        API_RESPONSE=$(wget -qO- "https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest" 2>/dev/null) || true
-    elif command -v curl &> /dev/null; then
-        API_RESPONSE=$(curl -s "https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest" 2>/dev/null) || true
-    fi
-
-    if [ -n "$API_RESPONSE" ]; then
-        if command -v python3 &> /dev/null; then
-            LATEST_VERSION=$(echo "$API_RESPONSE" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get('tag_name',''))" 2>/dev/null) || true
-        elif command -v python &> /dev/null; then
-            LATEST_VERSION=$(echo "$API_RESPONSE" | python -c "import json,sys; data=json.load(sys.stdin); print(data.get('tag_name',''))" 2>/dev/null) || true
-        elif command -v jq &> /dev/null; then
-            LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name // empty' 2>/dev/null) || true
-        else
-            LATEST_VERSION=$(echo "$API_RESPONSE" | grep '"tag_name":' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/') || true
-        fi
-    fi
-fi
-
-# Method 4: Scrape releases page HTML as last resort — try wget first
-if [ -z "$LATEST_VERSION" ]; then
-    RELEASES_HTML=""
-    if command -v wget &> /dev/null; then
-        RELEASES_HTML=$(wget -qO- "$REPO_URL/releases" 2>/dev/null) || true
-    elif command -v curl &> /dev/null; then
-        RELEASES_HTML=$(curl -s "$REPO_URL/releases" 2>/dev/null) || true
-    fi
-    if [ -n "$RELEASES_HTML" ]; then
-        LATEST_VERSION=$(echo "$RELEASES_HTML" | grep -oP '(?<=/releases/tag/)[0-9]+\.[0-9]+\.[0-9]+' | head -n 1) || true
-        # Fallback for systems without -P (PCRE) support
-        if [ -z "$LATEST_VERSION" ]; then
-            LATEST_VERSION=$(echo "$RELEASES_HTML" | grep -o '/releases/tag/[0-9]*\.[0-9]*\.[0-9]*' | head -n 1 | sed 's|.*/||') || true
-        fi
-    fi
-fi
 
 # Validate: version should look like X.Y.Z
 if [ -n "$LATEST_VERSION" ]; then
@@ -193,79 +149,54 @@ pkill -f antigravity-server || true
 
 # 5. Patch Binaries
 if [ ! -d "$SERVER_DIR" ]; then
-    echo "⚠️  Server directory $SERVER_DIR not found. Connect via VS Code to download it."
+    echo "⚠️  Server directory $SERVER_DIR not found. Connect via Antigravity to download it."
     exit 1
 fi
 
 EXTENSIONS_DIR="$HOME/.antigravity-server/extensions"
 echo "🔍 Patching binaries..."
 
-patch_elf_file() {
-    local file=$1
-    local is_exec=$2 
-    
-    if [[ ! -f "$file" ]]; then return; fi
-    
-    if [[ "$is_exec" -eq 1 ]]; then
-       # Skip static binaries
-       if ! $MAMBA_CMD run -n antigravity-node patchelf --print-interpreter "$file" >/dev/null 2>&1; then
-           echo "   ⏩ Skipping (static): $file"
-           return
-       fi
-       # REMOVED: "Already patched" check. We FORCE patch now to ensure correctness.
-    else
-       if ! readelf -h "$file" >/dev/null 2>&1; then return; fi
-    fi
-
-    echo "   🔨 Patching: $file"
-    $MAMBA_CMD run -n antigravity-node patchelf --set-rpath "$NEW_RPATH" --force-rpath "$file"
-    
-    if [[ "$is_exec" -eq 1 ]]; then
-        $MAMBA_CMD run -n antigravity-node patchelf --set-interpreter "$INTERPRETER" "$file"
-    fi
-}
-
-# Cleanup Wrapper function
-unwrap_node_binary() {
-    local node_path=$1
-    
-    # Check if 'node.real' exists (residue from wrapper strategy)
-    if [ -f "$node_path.real" ]; then
-        echo "   🧹 Removing wrapper and restoring binary: $node_path"
-        rm "$node_path" # Delete the wrapper script
-        mv "$node_path.real" "$node_path" # Restore executable
-    elif head -c 2 "$node_path" | grep -q "#!"; then
-        # It's a script but no .real? Suspicious. Check if it's OUR wrapper.
-        if grep -q "antigravity wrapper" "$node_path"; then
-             echo "   🗑️  Deleting orphaned wrapper: $node_path"
-             rm "$node_path"
-             # If .real is missing, we might be in trouble, but hopefully scp restored it or we download again.
-             # Assume user didn't lose the binary.
-        fi
-    fi
-}
-
 DIRS_TO_SEARCH="$SERVER_DIR"
 if [ -d "$EXTENSIONS_DIR" ]; then
     DIRS_TO_SEARCH="$DIRS_TO_SEARCH $EXTENSIONS_DIR"
 fi
 
-# Pass 0: Unwrap 'node' FIRST
-find "$SERVER_DIR" -name "node" -type f | while read -r node_bin; do
-    unwrap_node_binary "$node_bin"
+# Pass 0: Unwrap 'node' if a wrapper was left behind
+for node_bin in $(find "$SERVER_DIR" -name "node" -type f 2>/dev/null); do
+    if [ -f "$node_bin.real" ]; then
+        echo "   🧹 Removing wrapper and restoring binary: $node_bin"
+        rm "$node_bin"
+        mv "$node_bin.real" "$node_bin"
+    elif [ -f "$node_bin.original" ]; then
+        echo "   🧹 Removing wrapper and restoring binary: $node_bin"
+        rm "$node_bin"
+        mv "$node_bin.original" "$node_bin"
+    elif head -c 2 "$node_bin" | grep -q "#!"; then
+        echo "   🗑️  Deleting orphaned wrapper: $node_bin"
+        rm "$node_bin"
+    fi
 done
 
-# Pass 1: Patch everything (Now 'node' is a real binary again)
-find $DIRS_TO_SEARCH -type f -perm /111 \
-    ! -name "*.node" ! -name "*.so" ! -name "*.real" | while read -r exec_file; do
-    if head -c 2 "$exec_file" | grep -q "#!"; then continue; fi
-    patch_elf_file "$exec_file" 1
+# Pass 1: Patch executables
+for exec_file in $(find $DIRS_TO_SEARCH -type f -perm /111 \
+    ! -name "*.node" ! -name "*.so" ! -name "*.real" ! -name "*.original" 2>/dev/null); do
+    # Skip scripts
+    if head -c 2 "$exec_file" 2>/dev/null | grep -q "#!"; then continue; fi
+    # Skip non-ELF files (e.g. .wasm)
+    if ! $MAMBA_CMD run -n antigravity-node patchelf --print-interpreter "$exec_file" >/dev/null 2>&1; then
+        continue
+    fi
+    echo "   🔨 Patching: $exec_file"
+    $MAMBA_CMD run -n antigravity-node patchelf --set-rpath "$NEW_RPATH" --force-rpath "$exec_file" || true
+    $MAMBA_CMD run -n antigravity-node patchelf --set-interpreter "$INTERPRETER" "$exec_file" || true
 done
 
-# Pass 2: Patch .node modules
-find $DIRS_TO_SEARCH -name "*.node" -type f | while read -r native_mod; do
-    patch_elf_file "$native_mod" 0
+# Pass 2: Patch .node native modules
+for native_mod in $(find $DIRS_TO_SEARCH -name "*.node" -type f 2>/dev/null); do
+    if ! readelf -h "$native_mod" >/dev/null 2>&1; then continue; fi
+    echo "   🔨 Patching module: $native_mod"
+    $MAMBA_CMD run -n antigravity-node patchelf --set-rpath "$NEW_RPATH" --force-rpath "$native_mod" || true
 done
 
-echo "✅ Patching complete (Wrapper Removed)."
+echo "✅ Patching complete."
 echo "   RPATH is set to internal libs. Terminal should work now."

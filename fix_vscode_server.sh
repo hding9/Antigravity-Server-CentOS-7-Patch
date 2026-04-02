@@ -1,15 +1,11 @@
 #!/bin/bash
 # fix_vscode_server.sh
-# VS Code Remote SSH - CentOS 7 Patch
+# VS Code Server - CentOS 7 Patch
 #
-# Replaces VS Code Server's bundled node binary with a wrapper that uses
-# a conda/micromamba-installed node, which is built to work on CentOS 7's
-# older kernel (3.10) and glibc (2.17).
-#
-# The patchelf/glibc-replacement approach does NOT work here because:
-# - CentOS 7 runs kernel 3.10, but modern glibc (2.42) requires kernel 3.17+
-# - The bundled node requires glibc 2.28+, which CentOS 7 doesn't have
-# Instead, we install a compatible node via conda-forge and redirect to it.
+# CentOS 7 ships with glibc 2.17, but VS Code Server's bundled node
+# requires glibc 2.28+. This script replaces the bundled node binary
+# with a conda/micromamba-installed node that is built to work on
+# CentOS 7's older glibc and kernel.
 
 set -e
 
@@ -23,7 +19,7 @@ if [ -z "$1" ]; then
     echo "Examples:"
     echo "  bash $0 local          # Run on the current machine"
     echo "  bash $0 user@hostname  # Run on a remote server via SSH"
-    echo "  bash $0 orpheus        # Run on a remote server via SSH alias"
+
     exit 1
 fi
 
