@@ -34,32 +34,44 @@ echo "🚀 Applying the Antigravity patch locally..."
 SERVER_DIR="$HOME/.antigravity-server/bin"
 
 # Fetch latest release version from MikeWang000000/vscode-server-centos7 dynamically
+REPO_URL="https://github.com/MikeWang000000/vscode-server-centos7"
 LATEST_VERSION=""
 
-# Method 1: Try HTTP redirect parsing to bypass GitHub API rate limits
-if command -v curl &> /dev/null; then
-    LATEST_VERSION=$(curl -s -I https://github.com/MikeWang000000/vscode-server-centos7/releases/latest | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r') || true
-elif command -v wget &> /dev/null; then
-    LATEST_VERSION=$(wget --max-redirect=0 https://github.com/MikeWang000000/vscode-server-centos7/releases/latest 2>&1 | grep -i 'Location:' | sed 's/.*tag\///' | tr -d '\r') || true
+
+# Method 1a: curl -w redirect_url (most reliable, works on old curl)
+if [ -z "$LATEST_VERSION" ] && command -v curl &> /dev/null; then
+    LATEST_VERSION=$(curl -s -o /dev/null -w "%{redirect_url}" "$REPO_URL/releases/latest" 2>/dev/null | sed 's/.*tag\///' | tr -d '\r\n') || true
 fi
 
-# Method 2: Fallback to git ls-remote if available
+# Method 1b: curl -I Location header fallback
+if [ -z "$LATEST_VERSION" ] && command -v curl &> /dev/null; then
+    LATEST_VERSION=$(curl -s -I "$REPO_URL/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n') || true
+fi
+
+# Method 1c: wget redirect parsing
+if [ -z "$LATEST_VERSION" ] && command -v wget &> /dev/null; then
+    LATEST_VERSION=$(wget --max-redirect=0 "$REPO_URL/releases/latest" 2>&1 | grep -i 'Location:' | sed 's/.*tag\///' | sed 's/ \[following\]//' | tr -d '\r\n') || true
+fi
+
+# Method 2: git ls-remote tags
 if [ -z "$LATEST_VERSION" ] && command -v git &> /dev/null; then
-    LATEST_VERSION=$(git ls-remote --tags --refs https://github.com/MikeWang000000/vscode-server-centos7.git 2>/dev/null | grep -v '\^{}' | sed -E 's/.*refs\/tags\///' | sort -V | tail -n 1) || true
+    LATEST_VERSION=$(git ls-remote --tags --refs "$REPO_URL.git" 2>/dev/null | grep -v '\^{}' | sed -E 's/.*refs\/tags\///' | sort -V | tail -n 1) || true
 fi
 
-# Method 3: Fallback to GitHub API (may hit rate limits)
+# Method 3: GitHub API (may hit rate limits) — try wget first, curl as fallback
 if [ -z "$LATEST_VERSION" ]; then
     API_RESPONSE=""
-    if command -v curl &> /dev/null; then
-        API_RESPONSE=$(curl -s https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest 2>/dev/null) || true
-    elif command -v wget &> /dev/null; then
-        API_RESPONSE=$(wget -qO- https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest 2>/dev/null) || true
+    if command -v wget &> /dev/null; then
+        API_RESPONSE=$(wget -qO- "https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest" 2>/dev/null) || true
+    elif command -v curl &> /dev/null; then
+        API_RESPONSE=$(curl -s "https://api.github.com/repos/MikeWang000000/vscode-server-centos7/releases/latest" 2>/dev/null) || true
     fi
-    
+
     if [ -n "$API_RESPONSE" ]; then
         if command -v python3 &> /dev/null; then
             LATEST_VERSION=$(echo "$API_RESPONSE" | python3 -c "import json,sys; data=json.load(sys.stdin); print(data.get('tag_name',''))" 2>/dev/null) || true
+        elif command -v python &> /dev/null; then
+            LATEST_VERSION=$(echo "$API_RESPONSE" | python -c "import json,sys; data=json.load(sys.stdin); print(data.get('tag_name',''))" 2>/dev/null) || true
         elif command -v jq &> /dev/null; then
             LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r '.tag_name // empty' 2>/dev/null) || true
         else
@@ -68,9 +80,31 @@ if [ -z "$LATEST_VERSION" ]; then
     fi
 fi
 
+# Method 4: Scrape releases page HTML as last resort — try wget first
 if [ -z "$LATEST_VERSION" ]; then
-    echo "⚠️  Could not fetch latest release version from GitHub API. Falling back to hardcoded version 1.109.5"
-    VERSION="1.109.5"
+    RELEASES_HTML=""
+    if command -v wget &> /dev/null; then
+        RELEASES_HTML=$(wget -qO- "$REPO_URL/releases" 2>/dev/null) || true
+    elif command -v curl &> /dev/null; then
+        RELEASES_HTML=$(curl -s "$REPO_URL/releases" 2>/dev/null) || true
+    fi
+    if [ -n "$RELEASES_HTML" ]; then
+        LATEST_VERSION=$(echo "$RELEASES_HTML" | grep -oP '(?<=/releases/tag/)[0-9]+\.[0-9]+\.[0-9]+' | head -n 1) || true
+        # Fallback for systems without -P (PCRE) support
+        if [ -z "$LATEST_VERSION" ]; then
+            LATEST_VERSION=$(echo "$RELEASES_HTML" | grep -o '/releases/tag/[0-9]*\.[0-9]*\.[0-9]*' | head -n 1 | sed 's|.*/||') || true
+        fi
+    fi
+fi
+
+# Validate: version should look like X.Y.Z
+if [ -n "$LATEST_VERSION" ]; then
+    LATEST_VERSION=$(echo "$LATEST_VERSION" | grep -oE '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -1) || true
+fi
+
+if [ -z "$LATEST_VERSION" ]; then
+    echo "⚠️  Could not fetch latest release version. Falling back to hardcoded version 1.111.0"
+    VERSION="1.111.0"
 else
     # Strip any potential 'v' prefix if it exists in the tag name
     VERSION="${LATEST_VERSION#v}"
