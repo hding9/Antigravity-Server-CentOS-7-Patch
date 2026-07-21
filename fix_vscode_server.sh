@@ -78,11 +78,17 @@ if ! $MAMBA_CMD run -n "$CONDA_ENV_NAME" x86_64-conda-linux-gnu-g++ --version &>
 fi
 
 # 1c. Ensure modern wget is available (CentOS 7 wget doesn't support --no-config)
-CONDA_WGET=$($MAMBA_CMD run -n "$CONDA_ENV_NAME" which wget 2>/dev/null)
-if [ -z "$CONDA_WGET" ]; then
+# Resolve wget by its path inside the conda env — `which wget` can fall back to
+# the ~/.local/bin/wget wrapper from a previous run, producing a wrapper that
+# execs itself in an infinite loop.
+CONDA_WGET="$CONDA_ENV_BIN/wget"
+if [ ! -x "$CONDA_WGET" ]; then
     echo "📦 Installing modern wget..."
     $MAMBA_CMD install -n "$CONDA_ENV_NAME" -c conda-forge wget -y 2>&1 | tail -5
-    CONDA_WGET=$($MAMBA_CMD run -n "$CONDA_ENV_NAME" which wget 2>/dev/null)
+fi
+if [ ! -x "$CONDA_WGET" ]; then
+    echo "⚠️  wget not found in conda env — skipping wget wrapper"
+    CONDA_WGET=""
 fi
 
 # Create wget wrapper in ~/.local/bin so VS Code's SSH sessions find it
