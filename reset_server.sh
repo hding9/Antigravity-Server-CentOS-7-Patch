@@ -65,6 +65,11 @@ if [ -n "$MAMBA_CMD" ]; then
     $MAMBA_CMD remove -n vscode-node --all -y 2>/dev/null || true
 fi
 
+if [ -d "$HOME/.local/share/vscode-node-glibc217" ]; then
+    echo "🧹 Removing downloaded glibc-2.17 Node builds (~/.local/share/vscode-node-glibc217)..."
+    rm -rf "$HOME/.local/share/vscode-node-glibc217"
+fi
+
 # --- Cleanup shared resources ---
 echo ""
 echo "=== Shared Resources ==="

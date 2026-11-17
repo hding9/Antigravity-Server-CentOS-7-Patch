@@ -35,12 +35,15 @@ Uses a **"Side-Loading & Patching"** strategy:
 ### VS Code Server (`fix_vscode_server.sh`)
 Uses a **"Node Replacement"** strategy:
 
-1.  **Install Compatible Node**: Creates a conda environment (`vscode-node`) with a Node.js build compatible with CentOS 7.
-2.  **Install Build Tools**: Installs `gxx_linux-64` from conda-forge for rebuilding native modules.
-3.  **Install Modern wget**: A conda-provided wget wrapper is installed to `~/.local/bin/` (CentOS 7's system wget is too old for VS Code's download scripts).
-4.  **Patch Server Installations**: Backs up the original `node` binary and replaces it with a wrapper pointing to the conda node.
-5.  **Rebuild node-pty**: If the bundled `pty.node` has missing glibc symbols, it is rebuilt from source.
-6.  **Configure Codex**: Sets `sandbox_mode = "danger-full-access"` in `~/.codex/config.toml` to bypass `bwrap` (requires unprivileged user namespaces, unavailable on CentOS 7's kernel 3.10).
+1.  **Install Toolchain**: Creates a conda environment (`vscode-node`) with `gxx_linux-64` (for rebuilding native modules), a modern `wget`, and a fallback Node.js.
+2.  **Install Modern wget**: A conda-provided wget wrapper is installed to `~/.local/bin/` (CentOS 7's system wget is too old for VS Code's download scripts).
+3.  **Pick a Node per build**: For each server install, reads the Node version VS Code bundles (e.g. `v24.21.0`) and downloads the **same version** built for glibc 2.17 from [unofficial-builds.nodejs.org](https://unofficial-builds.nodejs.org/) (`linux-x64-glibc-217`, SHA256-verified) into `~/.local/share/vscode-node-glibc217/`. If no such build exists, falls back to the conda Node.
+4.  **Patch Server Installations**: Backs up the original `node` binary and replaces it with a wrapper pointing to the chosen Node. The wrapper also prepends `~/.local/share/vscode-node-glibc217/lib` (a copy of just `libstdc++.so.6` and `libgcc_s.so.1` from the conda env) to `LD_LIBRARY_PATH`, because VS Code's native modules (`spdlog`, `vsda`, `kerberos`, `@parcel/watcher`...) need `GLIBCXX_3.4.20+`, which CentOS 7's libstdc++ lacks.
+5.  **Rebuild node-pty**: If the bundled `pty.node` has missing glibc symbols or fails to load, it is rebuilt from source against the chosen Node's headers.
+6.  **Patch vsce-sign**: Wraps the extension-signature binary with the conda `libstdc++` (needs `GLIBCXX_3.4.20+`), otherwise extension installs fail with `Signature verification failed`.
+7.  **Configure Codex**: Sets `sandbox_mode = "danger-full-access"` in `~/.codex/config.toml` to bypass `bwrap` (requires unprivileged user namespaces, unavailable on CentOS 7's kernel 3.10).
+
+> **Why not just conda Node?** VS Code 1.141+ (Node 24) imports `registerHooks` from `node:module`, which only exists in Node ≥ 22.15. Every conda-forge `nodejs` ≥ 22.15 is built against glibc 2.28 and refuses to install on CentOS 7, so the newest conda Node (22.6) crashes with `SyntaxError: The requested module 'node:module' does not provide an export named 'registerHooks'`. The unofficial glibc-2.17 builds are the only way to get a matching Node.
 
 ## Prerequisites
 *   **Micromamba** or **Conda** (used to install `patchelf`, Node.js, and build tools).
@@ -67,6 +70,11 @@ bash fix_vscode_server.sh <your_ssh_host>
 
 # Patch locally on the server
 bash fix_vscode_server.sh local
+```
+Every VS Code update downloads a new ~650 MB server build into `~/.vscode-server/bin/` and never removes the old one, so the script **deletes all but the newest build** before patching. Set `KEEP_BUILDS` to change that:
+```bash
+KEEP_BUILDS=2 bash fix_vscode_server.sh <your_ssh_host>   # keep the 2 newest (e.g. two clients on different VS Code versions)
+KEEP_BUILDS=0 bash fix_vscode_server.sh <your_ssh_host>   # never delete anything
 ```
 
 ### `reset_server.sh`
